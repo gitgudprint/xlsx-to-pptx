@@ -1,0 +1,26 @@
+# Confidential/source data — never commit. Broad patterns on purpose: any
+# folder with "input" in its name, anywhere in the tree, plus the raw data
+# file types themselves as a second layer of protection.
+**/*[Ii]nput*/
+**/*.xlsx
+**/*.xlsm
+**/*.pptx
+output/
+
+# Old backups / scratch analysis
+PREV/
+laravel/
+analysis_output.txt
+analyze_pptx.py
+xlsx_analysis.txt
+_inspect.py
+slide12.py
+two_slides.pptx
+
+# OS / editor cruft
+.DS_Store
+.claude/
+
+# Python
+__pycache__/
+*.pyc

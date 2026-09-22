@@ -1,0 +1,5 @@
+SLIDE_3_EXAM_JATENG = Secara YoY, total HC Managed Jawa Tengah mengalami kenaikan di berbagai fungsi, kecuali Credit yang mengalami penurunan
+
+Kenaikan headcount ini berasal dari migrasi 9 cab HI di Jan-26 dan sentralisasi PPS di Sentra Billing Solo
+
+Secara jumlah headcount di 2026, Jawa Tengah merupakan top 3 region dari jumlah headcount

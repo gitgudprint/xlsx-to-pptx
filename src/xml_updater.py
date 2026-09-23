@@ -366,6 +366,45 @@ def update_chart_xml(chart_xml_bytes, categories, series_list):
     return _SER_RE.sub(replace_ser, xml).encode('utf-8')
 
 
+_VALAX_RE = re.compile(r'<c:valAx>.*?</c:valAx>', re.DOTALL)
+_AXIS_MAX_RE = re.compile(r'<c:max val="[^"]*"/>')
+
+
+def set_value_axis_autoscale(chart_xml_bytes):
+    """
+    Menghapus batas atas (`<c:max>`) sumbu nilai (value axis) pada chart,
+    supaya PowerPoint menghitung ulang skala sumbu secara otomatis
+    berdasarkan data yang sesungguhnya tampil, bukan memakai batas atas
+    yang di-hardcode dari template (nilai contoh region demo saat
+    template dibuat).
+
+    KENAPA DIBUTUHKAN: beberapa chart (mis. chart7 slide 4, breakdown per
+    fungsi) di-generate ulang untuk 12 region yang jumlah karyawannya
+    beda-beda jauh, tapi `<c:max>` sumbu nilainya tetap nilai tunggal yang
+    di-hardcode di template (mis. "1100", pas untuk Jawa Tengah tapi
+    kekecilan untuk region berkantong headcount besar) — akibatnya bar
+    milik region lain terpotong/keluar dari bingkai plot area. Menghapus
+    `<c:max>` (min dibiarkan kalau ada, biasanya "0", supaya sumbu tetap
+    mulai dari nol) membuat PowerPoint memakai auto-scaling bawaannya,
+    yang selalu pas dengan data yang sedang ditampilkan.
+
+    Cara kerja: `_VALAX_RE` mencari tiap blok `<c:valAx>...</c:valAx>`
+    (chart dual-axis punya lebih dari satu), lalu di dalam tiap blok itu
+    `_AXIS_MAX_RE` menghapus elemen `<c:max val="..."/>` (kalau ada; kalau
+    tidak ada, blok dibiarkan apa adanya).
+
+    Parameter: chart_xml_bytes (bytes XML chart, hasil `update_chart_xml`).
+
+    Return: bytes XML chart dengan `<c:max>` sumbu nilai sudah dihapus.
+    Dipanggil dari `_update_chart` di pptx_updater.py untuk nomor chart
+    tertentu (saat ini chart 7 dan 10-14 di slide 4) SETELAH
+    `update_chart_xml`, sebelum `editor.update(...)`.
+    """
+    xml = chart_xml_bytes.decode('utf-8')
+    xml = _VALAX_RE.sub(lambda m: _AXIS_MAX_RE.sub('', m.group(0)), xml)
+    return xml.encode('utf-8')
+
+
 def update_chart_xml_scatter(chart_xml_bytes, scatter_rows):
     """
     Memperbarui cache `xVal`/`yVal` pada chart tipe scatter/bubble.

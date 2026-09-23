@@ -39,7 +39,7 @@ XLSX_FILES = {
 }
 
 # Daftar nama region baku (sesuai penulisan di data "Slide 3 - YoY").
-# Ini adalah "sumber kebenaran" urutan/daftar region — main.py melakukan
+# Ini adalah urutan/daftar region — main.py melakukan
 # loop atas REGIONS untuk membuat satu PPTX per region, dan hampir semua
 # fungsi loader di data_loader.py melakukan loop yang sama untuk mengisi
 # data tiap region.

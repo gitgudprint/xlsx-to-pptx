@@ -577,18 +577,42 @@ def load_slide5_7_data(df_c=None):
             return [(lbl, counts.get(lbl, 0) / total) for lbl in order]
 
         def pa_breakdown(df, group_col, order):
-            """Untuk tiap kategori dalam `order`, hitung % PA (Penilaian) 2, 3, >=4."""
+            """
+            Untuk tiap kategori dalam `order`, hitung % PA (Penilaian) 2, 3,
+            >=4 dari karyawan yang SUDAH punya nilai PA saja.
+
+            PENTING soal pembagi (denominator): kolom "cat pa" juga berisi
+            nilai non-angka seperti "tidak ada data PA" atau "belum ada
+            data PA - NEW" untuk karyawan yang belum genap 6 bulan menilai
+            PA-nya — jumlahnya besar khusus di kategori masa kerja "a. <1
+            thn" (karyawan baru). Kalau pembaginya `len(sub)` (SEMUA
+            karyawan di kategori itu, termasuk yang belum ada nilai PA-nya),
+            PA2%+PA3%+PA4% jadi TIDAK PERNAH mencapai 100% khusus di
+            kategori itu — ini persis penyebab "data regional <1thn salah"
+            yang dilaporkan pengguna: kategori "a. <1 thn" menampilkan PA2
+            yang jauh lebih tinggi dari kategori lain sekaligus totalnya
+            tidak genap 100%, sementara sheet precomputed NASIONAL (mis.
+            "SLIDE 6 - PA Sales Nas") memakai pembagi = jumlah karyawan yang
+            sudah ternilai (PA2+PA3+PA4) saja — kolom Grand Total di sheet
+            itu selalu tepat 1.0 untuk tiap baris.
+
+            Supaya konsisten dengan sumber nasional (dan supaya PA2+PA3+PA4
+            selalu berjumlah 100% di semua kategori, bukan cuma kebetulan
+            saja untuk kategori yang karyawannya sudah lama bekerja),
+            pembagi di sini diganti jadi `pa2 + pa3 + pa4` (jumlah karyawan
+            yang sudah ternilai), bukan `len(sub)`.
+            """
             rows = []
             for lbl in order:
                 sub = df[df[group_col] == lbl]
-                total = len(sub)
-                if total == 0:
+                pa2 = (sub["cat pa"] == 2).sum()
+                pa3 = (sub["cat pa"] == 3).sum()
+                pa4 = (sub["cat pa"].isin([">=4", 4])).sum()
+                total_rated = pa2 + pa3 + pa4
+                if total_rated == 0:
                     rows.append((lbl, 0.0, 0.0, 0.0))
                 else:
-                    pa2 = (sub["cat pa"] == 2).sum() / total
-                    pa3 = (sub["cat pa"] == 3).sum() / total
-                    pa4 = (sub["cat pa"].isin([">=4", 4])).sum() / total
-                    rows.append((lbl, pa2, pa3, pa4))
+                    rows.append((lbl, pa2 / total_rated, pa3 / total_rated, pa4 / total_rated))
             return rows
 
         # Pemetaan label pendidikan antara database dan format chart
@@ -612,17 +636,26 @@ def load_slide5_7_data(df_c=None):
             return result_list
 
         def _edu_pa(df, display_order):
+            """
+            Sama seperti `pa_breakdown()` di atas (lihat penjelasan lengkap
+            di sana soal pembagi) tapi dikelompokkan per kategori
+            pendidikan, bukan LOS/usia. Pembagi juga memakai jumlah
+            karyawan yang sudah ternilai (pa2+pa3+pa4), bukan seluruh
+            karyawan di kategori itu, supaya konsisten dengan sheet
+            precomputed nasional dan supaya tiap kategori selalu berjumlah
+            100%.
+            """
             result_list = []
             for lbl in display_order:
                 sub = df[[str(r).startswith(lbl[:2]) for r in df["Edu Cat"]]]
-                total = len(sub)
-                if total == 0:
+                pa2 = (sub["cat pa"] == 2).sum()
+                pa3 = (sub["cat pa"] == 3).sum()
+                pa4 = (sub["cat pa"].isin([">=4", 4])).sum()
+                total_rated = pa2 + pa3 + pa4
+                if total_rated == 0:
                     result_list.append((lbl, 0.0, 0.0, 0.0))
                 else:
-                    pa2 = (sub["cat pa"] == 2).sum() / total
-                    pa3 = (sub["cat pa"] == 3).sum() / total
-                    pa4 = (sub["cat pa"].isin([">=4", 4])).sum() / total
-                    result_list.append((lbl, pa2, pa3, pa4))
+                    result_list.append((lbl, pa2 / total_rated, pa3 / total_rated, pa4 / total_rated))
             return result_list
 
         edu_chart_order = ["1. SLTA sederajat & di bawahnya", "2. Diploma", "3. Sarjana", "4. Pasca Sarjana"]
@@ -667,23 +700,23 @@ def load_slide5_7_data(df_c=None):
 
 def load_slide5_national():
     """
-    Baca sheet precomputed "SLIDE 5 - Nat Fl (chart bawah)" (asumsi layout
-    baris tetap seperti tercatat di komentar bagian bawah fungsi) untuk
-    mengambil data LOS/usia/pendidikan NASIONAL (sama untuk semua region,
-    tidak difilter per region — file c sudah punya sheet ringkasan nasional
-    tersendiri) yang dipakai chart 21-23 pada slide 5.
+    Baca sheet precomputed "SLIDE 5 - Nat Fl (chart bawah)" untuk mengambil
+    data LOS/usia/pendidikan NASIONAL (sama untuk semua region, tidak
+    difilter per region — file c sudah punya sheet ringkasan nasional
+    tersendiri) yang dipakai chart 18/21/22 pada slide 5.
+
+    Pembagian 3 blok (LOS/AGE/EDU) di dalam sheet dicari secara dinamis
+    lewat `_split_national_sections()` (berdasarkan baris header "Row
+    Labels"), bukan nomor baris tetap — lihat catatan lengkap di
+    `_split_national_sections`.
 
     Parameter: tidak ada.
 
     Return: dict {"LOS": [(label, val_sales, val_coll), ...], "AGE": [...],
     "EDU": [...]}. Dipanggil oleh load_all() dan disimpan sebagai
     data["s5_nat"]; dipakai oleh chart21_los_fl_nat(), chart22_age_fl_nat(),
-    chart23_edu_fl_nat() di chart_data.py (parameter `region` pada fungsi
+    chart18_edu_fl_nat() di chart_data.py (parameter `region` pada fungsi
     chart tersebut tidak dipakai, karena data ini sama untuk semua region).
-
-    Catatan: `los_data`/`age_data` di bawah dihitung tapi TIDAK dipakai —
-    hasil akhir fungsi ini dibangun ulang lewat `result_los`/`result_age`/
-    `result_edu` di bagian bawah.
     """
     rows = _sheet_rows("c", "SLIDE 5 - Nat Fl (chart bawah)")
     los, age, edu = _split_national_sections(rows, value_cols=(1, 2))
@@ -1186,29 +1219,50 @@ def load_slide14_reason_out(region):
     _apply_slide14_reason_table() di pptx_updater.py untuk mengisi tabel ke-4
     di slide 14.
 
-    CATATAN: persentase adalah porsi tiap alasan dari TOTAL EXIT REGION ITU
-    SENDIRI (Grand Total berjumlah 100%), BUKAN attrition rate perusahaan
-    (exit / headcount) — basis persentase asli pivot Excel-nya tidak bisa
-    direkonstruksi hanya dari cache saja.
+    CATATAN pembagi (denominator): persentase adalah porsi tiap alasan dari
+    RATA-RATA HEADCOUNT region tersebut (avg_hc, sama seperti konvensi slide
+    15 — rata-rata jumlah karyawan aktif pada snapshot bulan paling awal dan
+    paling akhir yang ada di cache headcount di sheet yang sama), BUKAN dari
+    total exit region itu sendiri. Dulu sempat pakai total exit sebagai
+    pembagi (Grand Total = 100%), tapi terverifikasi salah — Grand Total
+    versi Excel-nya jauh di bawah 100% (mis. ~5% untuk Bali), sesuai basis
+    attrition rate (exit / avg headcount) yang dipakai tabel slide 15/16.
     """
     cache_num = _find_cache_with_field("f1", "SLIDE 14 - Reason Out - Region", "reason cat")
+    hc_cache_num = _find_cache_with_field("f1", "SLIDE 14 - Reason Out - Region", "bulan lapor")
     if cache_num is None:
         return []
     raw = _parse_pivot_cache("f1", cache_num)
     wilayah = REGION_WILAYAH[region]
     recs = [r for r in raw if r.get("Region Business") == wilayah]
-    total = len(recs)
-    if total == 0:
+    if not recs:
         return []
+
+    avg_hc = None
+    if hc_cache_num is not None:
+        hc_raw = _parse_pivot_cache("f1", hc_cache_num)
+        if hc_raw:
+            keys = {k.lower(): k for k in hc_raw[0].keys()}
+            hc_region_f = keys.get("region business (fix)") or keys.get("region business")
+            hc_month_f = keys.get("bulan lapor")
+            hc_recs = [r for r in hc_raw if r.get(hc_region_f) == wilayah]
+            months = sorted({r.get(hc_month_f) for r in hc_recs if r.get(hc_month_f)})
+            if months:
+                month_early, month_late = months[0], months[-1]
+                active_early = sum(1 for r in hc_recs if r.get(hc_month_f) == month_early)
+                active_late = sum(1 for r in hc_recs if r.get(hc_month_f) == month_late)
+                avg_hc = (active_early + active_late) / 2
+    if not avg_hc:
+        avg_hc = len(recs)   # fallback: cache headcount tidak ditemukan
 
     def pct_row(label, sub_recs, is_header=False):
         nr = sum(1 for r in sub_recs if r.get("Regret / Non Regret New") == "non regret")
         rg = sum(1 for r in sub_recs if r.get("Regret / Non Regret New") == "Regret")
         return {
             "label": label,
-            "non_regret": nr / total,
-            "regret": rg / total,
-            "total": (nr + rg) / total,
+            "non_regret": nr / avg_hc,
+            "regret": rg / avg_hc,
+            "total": (nr + rg) / avg_hc,
             "is_header": is_header,
         }
 

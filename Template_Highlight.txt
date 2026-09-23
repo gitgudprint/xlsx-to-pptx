@@ -3,3 +3,57 @@ SLIDE_3_EXAM_JATENG = Secara YoY, total HC Managed Jawa Tengah mengalami kenaika
 Kenaikan headcount ini berasal dari migrasi 9 cab HI di Jan-26 dan sentralisasi PPS di Sentra Billing Solo
 
 Secara jumlah headcount di 2026, Jawa Tengah merupakan top 3 region dari jumlah headcount
+
+SLIDE 4 EX = { Ada tren yang fluktuatif antara HC Managed terhadap NPAT Dimana pada tahun 2024 sempat terjadi tren turun kemudian Kembali naik di tahun 2025
+41% proporsi Non Permanent (contract & outsources) dari total karyawan untuk menjaga fleksibilitas strategi bisnis. Proporsi Non Permanen Regional < Nasional
+Proporsi headcount Jateng dipengaruhi oleh: migrasi 9 cab HI dan Sentra Billing Solo
+Proporsi karyawan terbesar ada di di SSD & Collection
+Proporsi Frontliners Staff adalah 57% dari total HC Managed (1.452 dari 2.537). Proporsi ini lebih tinggi dari proporsi frontliners Nasional ke HC Managed.
+Di Field Sales, Span of Control SO-SH = Nasional, dan SH-MGR Regional > Nasional
+Di Field Coll, Span of Control SO-SH > Nasional, dan SH-MGR Regional = Nasional
+50% karyawan memiliki masa kerja < 5 tahun, lebih kecil  proporsinya dibanding nasional
+72% karyawan adalah sarjana & 17% karyawan adalah Diploma
+42% karyawan berusia di 26 – 36 tahun }
+
+SLIDE 5 EX = {Secara masa kerja, Demografi Sales Officer di Jawa Tengah didominasi oleh masa kerja 1 – 5 tahun sebesar 40% dari total populasi SO.
+Sedangkan di Collection, meski sama-sama didominasi masa kerja 1 – 5 tahun di 41%, tetapi populasi kedua ada di masa kerja 5 – 10 tahun dengan 18%, baru disusul masa kerja <1 tahun di 15%
+Secara usia, Sales Officer dan Collection Officer dengan usia 26 - 36 tahun proporsi yang paling dominan. Untuk Sales Officer proporsinya tidak jauh berbeda dengan angka nasional yaitu di sekitar 56-64%, sedangkan untuk Collection Officer proporsinya berada di angka 47-58%
+Secara Pendidikan, baik proposi SMA sales dan collection berada di bawah proporsi nasional
+}
+
+SLIDE 6 EX = {Di Sales, performance PA masa kerja 1 tahun ke atas serupa didominasi Avg. PA >=4. Sedangkan masa kerja < 1 tahun masih didominasi Avg. PA 2 (52%). Populasi SO terbesar ada di 1 - 5 tahun (244 orang).Terhadap nasional, distribusi PA masa kerja < 1 tahun region sedikit lebih baik dari nasional.
+Berdasarkan usia, distribusi PA ideal dominan pada usia 37 tahun ke atas, sedangkan kelompok usia di bawah 36 tahun masih perlu peningkatan.Terhadap nasional, distribusi PA secara usia di region lebih baik dibanding angka nasional.
+Secara Pendidikan, proporsi PA Pendidikan SMA tidak lebih baik dari proporsi PA NasionalTerhadap nasional, distribusi PA Pendidikan Diploma region lebih baik dari angka nasional.
+}
+
+SLIDE 7 EX = {Di Collection, distribusi PA Region berdasarkan masa kerja memiliki pola yang cenderung samaTerhadap nasional, distribusi PA masa kerja region secara umum lebih baik dari distribusi PA Nasional.
+Berdasarkan usia, distribusi PA memiliki pola yang cenderung sama juga.Terhadap nasional, distribusi PA secara usia di region konsisten lebih baik dibanding nasional.
+Secara Pendidikan, distribusi PA juga tidak terlalu berbeda signifikan di setiap kategorinya, Terhadap nasional, performa pendidikan di region lebih baik, sehingga pemenuhan field Collection lulusan SMA bisa dioptimalkan kembali.
+}
+
+SLIDE 10 EX = {Realisasi Business Related Training Region masih di bawah average Nasional
+}
+
+SLIDE 14 EX = {Jawa Tengah
+Jateng mengikuti trend nasional di mana terjadi penurunan attrition di semua lini baik di non regret, regret dan total attrition
+Secara reason out, involuntary non regret masih karena terminasi unperformed (IMPK – EoC)
+Reason out voluntary tertinggi karena better job tetapi voluntary regret karena start business
+}
+
+SLIDE 15 EX = {Secara YoY Attrition, ada penurunan attrition baik dari segi non regret, regret maupun total
+Penurunan ini disebabkan karena menurunnya jumlah orang keluar dan meningkatnya headcount aktif sebagai pembagi
+Secara function, overall mengalami penurunan attrition
+Kenaikan attrition terjadi pada fungsi support. Di sales support ada kenaikan total attrition (regret dan non regret) dan di collection support ada di regrettednya
+Support terdiri dari fungsi back office dan SH
+}
+
+SLIDE 16 INSIGHT EX = {Branch dan Cluster beririsan regretted attrition  Purwokerto
+Alasan voluntary regret di Sales  Family Reason. Collection  Better Job Benefit.
+}
+
+SLIDE 17 EX = {Fraud Rate di Jateng mengalami kenaikan drastic dengan adanya 2 kasus berat di Pekalongan dan Salatiga
+Kenaikan fraud ini ada di proses akuisisi di Branch SSD
+Terjadi kenaikan baik oleh internal maupun eksternal
+Sumber kenaikannya dari jenis fraud manipulasi data dan fiktif
+Salatiga menjadi highlight karena ada fraud worst 5 baik di Branch SSD maupun Cluster Collection
+}

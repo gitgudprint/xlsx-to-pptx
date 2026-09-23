@@ -31,11 +31,15 @@ from .config import (
 )
 from .xml_updater import (
     update_chart_xml, update_chart_xml_scatter, update_embedded_workbook,
-    replace_text_in_slide, update_table_rows, PptxEditor,
+    replace_text_in_slide, update_table_rows, PptxEditor, set_value_axis_autoscale,
 )
 from .chart_data import (
     CHART_DATA_FN, SCATTER_CHARTS, get_chart_data,
     get_slide3_annotations, get_slide3_highlights, get_slide4_total_hc, get_slide4_wc_pct,
+    get_slide5_pct_boxes, get_slide6_highlights, get_slide7_highlights, get_slide10_insight,
+    get_slide4_highlights, get_slide4_lea_pct, _fmt_slide4_pct,
+    get_slide5_highlights, get_slide14_highlights, get_slide15_highlights,
+    get_slide16_highlights, get_slide18_highlights,
     chart1_hc, chart2_ssd, chart3_coll, chart4_credit, chart5_lar, chart6_bisnis,
 )
 
@@ -153,6 +157,16 @@ def _discover_charts(editor):
 # ---------------------------------------------------------------------------
 # Pembaruan chart
 # ---------------------------------------------------------------------------
+# Nomor chart slide 4 (7=Function, 10-12=histogram LOS/EDU/AGE, 13-14=Span
+# of Control) yang di template-nya punya batas atas sumbu nilai (`<c:max>`)
+# di-hardcode ke nilai region demo — dilepas ke auto-scale
+# (`set_value_axis_autoscale`) di sini supaya bar tidak terpotong/keluar
+# bingkai untuk region dengan angka lebih besar dari template. Chart 8, 9,
+# 15, 16, 17 di slide yang sama sudah auto-scale dari sononya (tidak ada
+# `<c:max>` di template), jadi tidak perlu masuk daftar ini.
+_AUTOSCALE_CHART_NUMS = {7, 10, 11, 12, 13, 14}
+
+
 def _update_chart(editor, chart_num, chart_info, data, region):
     """
     Memperbarui satu chart (nomor `chart_num`) untuk `region`: mengambil
@@ -206,6 +220,9 @@ def _update_chart(editor, chart_num, chart_info, data, region):
         if not categories:
             return
         new_chart_xml = update_chart_xml(chart_xml, categories, series_list)
+
+    if chart_num in _AUTOSCALE_CHART_NUMS:
+        new_chart_xml = set_value_axis_autoscale(new_chart_xml)
 
     editor.update(chart_path, new_chart_xml)
 
@@ -601,8 +618,195 @@ def _apply_slide3_highlights(slide_xml, data, region):
     highlights = get_slide3_highlights(data, region)
     text = slide_xml.decode('utf-8')
     for key, value in highlights.items():
+        escaped = value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         token = f"{{SLIDE3_HIGHLIGHT_{key}}}"
-        text = text.replace(f'<a:t>{token}</a:t>', f'<a:t>{value}</a:t>', 1)
+        text = text.replace(f'<a:t>{token}</a:t>', f'<a:t>{escaped}</a:t>', 1)
+    return text.encode('utf-8')
+
+
+def _apply_slide5_pct_boxes(slide_xml, data, region):
+    """
+    Mengisi 24 kotak highlight persentase pada slide 5 (LOS/AGE/EDU ×
+    Regional/Nasional × Field Sales/Field Coll) dengan angka sungguhan,
+    hasil `get_slide5_pct_boxes()` di chart_data.py — sebelumnya kotak-
+    kotak ini tidak pernah disentuh sama sekali oleh kode manapun, jadi
+    selalu menampilkan angka contoh statis dari template.
+
+    Cara kerja: tiap shape dicari lewat nama persisnya (mis. "Rectangle
+    64"), BUKAN lewat posisi/isi teks — karena nama shape adalah satu-
+    satunya penanda yang stabil (isi teksnya sendiri, mis. "29%", bisa
+    kebetulan sama antar kotak, dan posisi x/y tidak cocok untuk regex
+    sederhana). Beberapa kotak menyimpan angkanya dalam DUA run terpisah
+    (mis. `<a:t>64</a:t>` lalu `<a:t>%</a:t>`, bukan satu run "64%") — jadi
+    nilai baru dituliskan ke run `<a:t>` PERTAMA, dan seluruh run
+    berikutnya dalam shape yang sama dikosongkan (bukan dibiarkan), supaya
+    tidak muncul sisa teks ganda seperti "64%%".
+
+    Parameter: `slide_xml` (bytes XML slide 5), `data` (dict `load_all()`),
+    `region` (str).
+
+    Return: bytes XML slide 5 dengan seluruh kotak %-nya sudah diisi.
+    Dipanggil dari `generate_pptx_for_region` pada langkah slide 5.
+    """
+    boxes = get_slide5_pct_boxes(data, region)
+    text = slide_xml.decode('utf-8')
+    sp_blocks = re.findall(r'<p:sp\b.*?</p:sp>', text, re.DOTALL)
+    for sp in sp_blocks:
+        m = re.search(r'name="([^"]*)"', sp)
+        if not m or m.group(1) not in boxes:
+            continue
+        value = boxes[m.group(1)]
+        counter = [0]
+
+        def repl(mm, value=value, counter=counter):
+            i = counter[0]
+            counter[0] += 1
+            return mm.group(1) + (value if i == 0 else '') + mm.group(2)
+
+        new_sp = re.sub(r'(<a:t>)[^<]*(</a:t>)', repl, sp)
+        if new_sp != sp:
+            text = text.replace(sp, new_sp, 1)
+    return text.encode('utf-8')
+
+
+def _apply_slide4_lea_tables(slide_xml, data, region):
+    """
+    Mengisi 3 tabel statis persentase AGE/EDU/LOS di slide 4 (tepat di
+    bawah chart histogram 10/11/12) dengan angka hasil
+    `get_slide4_lea_pct()` di chart_data.py — tabel-tabel ini SEBELUMNYA
+    TIDAK PERNAH disentuh kode apa pun, jadi selalu menampilkan nilai
+    contoh statis milik region demo template untuk SEMUA region.
+
+    Struktur & urutan tabel (ditemukan lewat urutan kemunculan `<a:tbl>`
+    di XML, BUKAN nama shape — tabel-tabel ini tidak bernama unik):
+      tbl[0] = AGE: 2 baris (NAS lalu REG), masing-masing label + 5 sel
+               nilai (urutan AGE_ORDER menaik).
+      tbl[1] = EDU: sama seperti AGE tapi 4 sel nilai (EDU_ORDER menaik).
+      tbl[2] = LOS: 1 baris header ("REG"/"NAS", dilewati) + 6 baris data,
+               2 sel per baris (REG, NAS) — urutan barisnya MENAIK
+               (a. <1 thn -> f. > 20th), KEBALIKAN dari urutan LOS_ORDER
+               yang dipakai chart10. `get_slide4_lea_pct()` SUDAH
+               membalik urutan ini sebelum dikembalikan, jadi di sini
+               tinggal dipasangkan apa adanya sesuai posisi baris —
+               JANGAN membalik lagi di sini, supaya tidak tertukar/
+               terbalik dua kali.
+
+    Validasi jumlah sel per baris dicek sebelum ditulis (`num_tcs`
+    hasil `_rebuild_row_cells`); kalau tidak cocok dengan jumlah nilai
+    yang tersedia, baris itu dilewati apa adanya (tidak menghentikan
+    baris/tabel lain).
+
+    Parameter: `slide_xml` (bytes XML slide 4), `data` (dict load_all()),
+    `region`.
+
+    Return: bytes XML slide 4 dengan ketiga tabel sudah diisi. Dipanggil
+    dari `generate_pptx_for_region` (langkah 3a), sebelum
+    `_apply_slide4_highlights` (independen, tapi tabel ini dibaca ulang
+    oleh insight highlight sehingga urutan tidak masalah).
+    """
+    pct = get_slide4_lea_pct(data, region)
+    text = slide_xml.decode('utf-8')
+    tbl_matches = list(re.finditer(r'<a:tbl>.*?</a:tbl>', text, re.DOTALL))
+    if len(tbl_matches) < 3:
+        return slide_xml
+
+    def fill_row(row_xml, values, skip_first=True):
+        def transform(ci, tc, values=values, skip_first=skip_first):
+            vi = ci - 1 if skip_first else ci
+            if skip_first and ci == 0:
+                return tc
+            if vi < 0 or vi >= len(values):
+                return tc
+            return re.sub(r'(<a:t>)[^<]*(</a:t>)',
+                           lambda m, v=_fmt_slide4_pct(values[vi]): m.group(1) + v + m.group(2),
+                           tc, count=1)
+        new_row, _ = _rebuild_row_cells(row_xml, transform)
+        return new_row
+
+    # tbl[0]=AGE, tbl[1]=EDU: baris 0 = NAS, baris 1 = REG.
+    for tbl_idx, key in ((0, "AGE"), (1, "EDU")):
+        table_xml = tbl_matches[tbl_idx].group(0)
+        rows = re.findall(r'<a:tr\b.*?</a:tr>', table_xml, re.DOTALL)
+        if len(rows) != 2:
+            continue
+        new_table_xml = table_xml
+        new_table_xml = new_table_xml.replace(rows[0], fill_row(rows[0], pct[key]["nas"]), 1)
+        new_table_xml = new_table_xml.replace(rows[1], fill_row(rows[1], pct[key]["reg"]), 1)
+        text = text.replace(table_xml, new_table_xml, 1)
+
+    # tbl[2]=LOS: baris 0 = header (dilewati), baris 1-6 = data (REG, NAS).
+    table_xml = tbl_matches[2].group(0)
+    rows = re.findall(r'<a:tr\b.*?</a:tr>', table_xml, re.DOTALL)
+    if len(rows) == 7:
+        new_table_xml = table_xml
+        for i in range(6):
+            row_values = [pct["LOS"]["reg"][i], pct["LOS"]["nas"][i]]
+            new_row = fill_row(rows[i + 1], row_values, skip_first=False)
+            new_table_xml = new_table_xml.replace(rows[i + 1], new_row, 1)
+        text = text.replace(table_xml, new_table_xml, 1)
+
+    return text.encode('utf-8')
+
+
+def _apply_slide4_highlights(slide_xml, data, region):
+    """
+    Mengisi 3 placeholder highlight slide 4 ({SLIDE4_HIGHLIGHT_A/B/C})
+    dengan teks draf hasil `get_slide4_highlights()` di chart_data.py,
+    lewat `_apply_highlight_tokens`.
+
+    Parameter: `slide_xml` (bytes XML slide 4), `data` (dict load_all()),
+    `region`.
+
+    Return: bytes XML slide 4 dengan token sudah diganti. Dipanggil dari
+    `generate_pptx_for_region` (langkah 3b).
+    """
+    return _apply_highlight_tokens(slide_xml, "SLIDE4_HIGHLIGHT", get_slide4_highlights(data, region))
+
+
+def _apply_slide5_highlights(slide_xml, data, region):
+    """
+    Mengisi placeholder highlight slide 5 dengan teks draf hasil
+    `get_slide5_highlights()` di chart_data.py.
+
+    STRUKTUR TOKEN KHUSUS (lihat catatan lengkap di
+    `get_slide5_highlights`): token `{SLIDE5_HIGHLIGHT A}` (SPASI, bukan
+    underscore) muncul 4 KALI berurutan di XML untuk 4 bullet berbeda,
+    jadi diisi satu-per-satu SESUAI URUTAN KEMUNCULAN dari
+    `highlights["A_list"]` (elemen ke-0 mengisi kemunculan pertama, dst —
+    `text.replace(..., 1)` dipanggil berulang di dalam loop supaya tiap
+    panggilan hanya "memakan" satu kemunculan paling awal yang tersisa).
+    Token `{SLIDE5_HIGHLIGHT B}` muncul cuma sekali di kotak lain, diisi
+    terpisah dari `highlights["B"]` (saat ini selalu "" — lihat alasannya
+    di `get_slide5_highlights`).
+
+    Parameter: `slide_xml` (bytes XML slide 5 — dipanggil setelah
+    `_apply_slide5_pct_boxes`), `data` (dict load_all()), `region`.
+
+    Return: bytes XML slide 5 dengan token sudah diganti. Dipanggil dari
+    `generate_pptx_for_region` (langkah 3b).
+    """
+    def escape(s):
+        return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    highlights = get_slide5_highlights(data, region)
+    text = slide_xml.decode('utf-8')
+
+    token_a = '<a:t>{SLIDE5_HIGHLIGHT A}</a:t>'
+    a_values = list(highlights["A_list"])
+    counter = [0]
+
+    def repl_a(_m):
+        i = counter[0]
+        counter[0] += 1
+        if i < len(a_values) and a_values[i]:
+            return f'<a:t>{escape(a_values[i])}</a:t>'
+        return _m.group(0)
+
+    text = re.sub(re.escape(token_a), repl_a, text)
+
+    if highlights["B"]:
+        text = text.replace('<a:t>{SLIDE5_HIGHLIGHT B}</a:t>', f'<a:t>{escape(highlights["B"])}</a:t>', 1)
+
     return text.encode('utf-8')
 
 
@@ -866,6 +1070,90 @@ def _apply_slide10_rect_highlight(slide_xml, region):
     return text.encode('utf-8')
 
 
+def _apply_highlight_tokens(slide_xml, prefix, highlights):
+    """
+    Helper generik: mengganti token `{prefix_KEY}` (mis.
+    "SLIDE6_HIGHLIGHT_A") dengan isi `highlights[KEY]` di `slide_xml`, lewat
+    exact-match `<a:t>{token}</a:t>` seperti `_apply_slide3_highlights` —
+    dipakai bersama oleh `_apply_slide6_highlights` dan
+    `_apply_slide7_highlights` supaya logika penggantiannya tidak
+    diduplikasi.
+
+    Parameter:
+      slide_xml: bytes XML slide.
+      prefix: str, mis. "SLIDE6_HIGHLIGHT" — token penuhnya jadi
+        "{prefix_KEY}" untuk tiap KEY di `highlights`.
+      highlights: dict {KEY (str): value (str)} hasil get_slideN_highlights().
+        Slot dengan value "" dilewati (dibiarkan placeholder aslinya, siap
+        diisi manual — sama seperti slide 3). Isi value di-escape dulu
+        (&, <, >) sebelum disisipkan — PENTING karena beberapa label data
+        mentah (mis. kategori LOS "1<x<5 thn") mengandung karakter "<" yang
+        akan merusak struktur XML kalau ditulis apa adanya.
+
+    Return: bytes XML yang sudah diganti.
+    """
+    text = slide_xml.decode('utf-8')
+    for key, value in highlights.items():
+        if not value:
+            continue
+        escaped = value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        token = f"{{{prefix}_{key}}}"
+        text = text.replace(f'<a:t>{token}</a:t>', f'<a:t>{escaped}</a:t>', 1)
+    return text.encode('utf-8')
+
+
+def _apply_slide6_highlights(slide_xml, data, region):
+    """
+    Mengisi 3 placeholder highlight slide 6 ({SLIDE6_HIGHLIGHT_A/B/C} — PA
+    Sales: LOS/usia/pendidikan) dengan teks draf hasil
+    `get_slide6_highlights()` di chart_data.py, lewat `_apply_highlight_tokens`.
+
+    Parameter: `slide_xml` (bytes XML slide 6), `data` (dict load_all()),
+    `region`.
+
+    Return: bytes XML slide 6 dengan token sudah diganti. Dipanggil dari
+    `generate_pptx_for_region` (langkah 9b).
+    """
+    return _apply_highlight_tokens(slide_xml, "SLIDE6_HIGHLIGHT", get_slide6_highlights(data, region))
+
+
+def _apply_slide7_highlights(slide_xml, data, region):
+    """
+    Sama seperti `_apply_slide6_highlights`, untuk slide 7 (PA Collection),
+    memakai `get_slide7_highlights()`.
+
+    Return: bytes XML slide 7 dengan token sudah diganti. Dipanggil dari
+    `generate_pptx_for_region` (langkah 9b).
+    """
+    return _apply_highlight_tokens(slide_xml, "SLIDE7_HIGHLIGHT", get_slide7_highlights(data, region))
+
+
+def _apply_slide10_insight(slide_xml, data, region):
+    """
+    Mengisi 1 placeholder insight slide 10 ({SLIDE10_INSIGHT}) dengan teks
+    draf hasil `get_slide10_insight()` di chart_data.py (perbandingan %YTD
+    ACH training `region` vs nasional).
+
+    Cara kerja: sama seperti `_apply_slide3_highlights` — exact-match
+    `<a:t>{token}</a:t>`, aman karena token ini unik dan cuma muncul sekali
+    di slide 10.
+
+    Parameter: `slide_xml` (bytes XML slide 10), `data` (dict load_all()),
+    `region`.
+
+    Return: bytes XML slide 10 dengan token sudah diganti (atau bytes asli
+    tanpa perubahan kalau `get_slide10_insight` mengembalikan string
+    kosong). Dipanggil dari `generate_pptx_for_region` (langkah 9), setelah
+    `_apply_slide10_rect_highlight`.
+    """
+    insight = get_slide10_insight(data, region)
+    if not insight:
+        return slide_xml
+    text = slide_xml.decode('utf-8')
+    text = text.replace('<a:t>{SLIDE10_INSIGHT}</a:t>', f'<a:t>{insight}</a:t>', 1)
+    return text.encode('utf-8')
+
+
 # ---------------------------------------------------------------------------
 # Slide 14 – Tabel YoY attrition NR / RG / Total + kotak highlight
 # ---------------------------------------------------------------------------
@@ -1068,6 +1356,108 @@ def _apply_slide14_tables(slide_xml, data):
     return ''.join(parts).encode('utf-8')
 
 
+# Fill "pink" (sebenarnya tint pucat dari warna tema accent2, BUKAN kode
+# RGB harfiah) yang dipakai untuk highlight top-3 di 3 tabel NR/RG/Total
+# slide 14 — persis meniru fill yang dipakai contoh nyata di
+# "template_bg.pptx" (baris top-3 Jawa Tengah kolom YTD May26 pada tabel
+# NR sudah memakai fill ini di file itu). Dengan `schemeClr` (bukan
+# `srgbClr` hardcode), warnanya otomatis ikut tema kalau tema diganti,
+# sama seperti cara templatenya sendiri mendefinisikan fill ini.
+_SLIDE14_PINK_FILL = '<a:solidFill><a:schemeClr val="accent2"><a:lumMod val="20000"/><a:lumOff val="80000"/></a:schemeClr></a:solidFill>'
+
+
+def _apply_slide14_top3_highlights(slide_xml, data):
+    """
+    Menghitung dan menerapkan fill pink (`_SLIDE14_PINK_FILL`, tint pucat
+    accent2 — persis fill yang sudah dipakai di contoh nyata
+    "template_bg.pptx" untuk baris top-3) pada 3 nilai TERBESAR per kolom
+    (YTD May25 dan YTD May26, masing-masing dihitung TERPISAH) di tiap
+    satu dari 3 tabel ranking NR/RG/Total slide 14 — dipanggil SETELAH
+    `_apply_slide14_tables` mengisi teks tabelnya.
+
+    Cara kerja: sama seperti `_apply_slide14_tables`, XML dipecah lewat
+    `re.split` supaya 3 tabel pertama bisa diproses satu-satu, lalu tiap
+    tabel diproses lewat `_resolve_slide14_table_rows` untuk tahu region
+    kanonis pemilik tiap baris. Baris "Head Office"/"Nasional" (bukan
+    salah satu dari 12 `REGIONS`) SENGAJA DIKECUALIKAN dari perankingan —
+    "3 terbesar" di sini berarti 3 REGION terbesar, bukan ikut
+    dibandingkan dengan baris agregat perusahaan/nasional.
+
+    Nilai mentah (float, BUKAN string hasil format) diambil langsung dari
+    `data["attrition"][region][v25_key]`/`[v26_key]` (kunci metrik sesuai
+    `_SLIDE14_METRIC_KEYS[table_idx]`, sama seperti yang dipakai
+    `_apply_slide14_tables` untuk mengisi teksnya) supaya ranking akurat
+    tanpa terpengaruh pembulatan tampilan.
+
+    Sel yang di-highlight: kolom YTD25 (index sel ke-1) untuk anggota
+    top-3 `y25`, kolom YTD26 (index sel ke-2) untuk anggota top-3 `y26` —
+    KEDUA kolom dihitung independen (satu region bisa masuk top-3 salah
+    satu kolom saja, top-3 keduanya, atau tidak masuk keduanya). Sel yang
+    TIDAK masuk top-3 kolomnya dikembalikan ke fill putih polos
+    (`schemeClr val="bg1"`, warna default baris data di template ini)
+    supaya highlight lama (kalau ada, dari region yang sebelumnya masuk
+    top-3 sebelum data berubah) tidak nyangkut.
+
+    Parameter: `slide_xml` (bytes XML slide 14, hasil `_apply_slide14_tables`),
+    `data` (dict `load_all()`, key `"attrition"`).
+
+    Return: bytes XML slide 14 dengan highlight top-3 sudah diterapkan.
+    Dipanggil dari `generate_pptx_for_region` (langkah 3), tepat setelah
+    `_apply_slide14_tables`.
+    """
+    attrition = data.get("attrition", {})
+    text = slide_xml.decode('utf-8')
+    parts = re.split(r'(<a:tbl>.*?</a:tbl>)', text, flags=re.DOTALL)
+
+    table_idx = 0
+    for i, part in enumerate(parts):
+        if not part.startswith('<a:tbl>'):
+            continue
+        if table_idx >= 3:
+            table_idx += 1
+            continue
+        row_blocks, resolved = _resolve_slide14_table_rows(part)
+        v25_key, v26_key = _SLIDE14_METRIC_KEYS[table_idx]
+
+        candidates = []
+        for idx, canon in enumerate(resolved):
+            if canon not in REGIONS:
+                continue
+            row = attrition.get(canon)
+            if row is None:
+                continue
+            candidates.append((idx, row.get(v25_key), row.get(v26_key)))
+
+        top3_y25 = {idx for idx, _, _ in
+                    sorted((c for c in candidates if c[1] is not None), key=lambda c: -c[1])[:3]}
+        top3_y26 = {idx for idx, _, _ in
+                    sorted((c for c in candidates if c[2] is not None), key=lambda c: -c[2])[:3]}
+
+        new_part = part
+        for idx, row_xml in enumerate(row_blocks):
+            if idx not in top3_y25 and idx not in top3_y26:
+                continue
+
+            def transform(ci, tc, idx=idx):
+                if ci == 1:
+                    nyala = idx in top3_y25
+                elif ci == 2:
+                    nyala = idx in top3_y26
+                else:
+                    return tc
+                fill = _SLIDE14_PINK_FILL if nyala else '<a:solidFill><a:schemeClr val="bg1"/></a:solidFill>'
+                return _TCPR_TAIL_OPTIONAL_RE.sub(rf'\1{fill}\2', tc, count=1)
+
+            new_row_xml, num_tcs = _rebuild_row_cells(row_xml, transform)
+            if num_tcs == 3:
+                new_part = new_part.replace(row_xml, new_row_xml, 1)
+
+        parts[i] = new_part
+        table_idx += 1
+
+    return ''.join(parts).encode('utf-8')
+
+
 def _apply_slide14_rect_highlights(slide_xml, region):
     """
     Memindahkan masing-masing dari 3 kotak highlight merah slide 14 ke
@@ -1171,10 +1561,15 @@ def _apply_slide14_reason_table(slide_xml, data, region):
 
     Selain mengisi nilai, fungsi ini juga menghitung highlight (fill kuning
     "FFFF00") pada baris alasan (dari 6 baris individual, bukan baris
-    header/agregat — `leaf_idxs`) yang punya nilai TERTINGGI di masing-
-    masing dari 3 kolom nilai (non_regret, regret, total) — meniru
-    highlight contoh statis yang sudah ada di template (warna sama), tapi
-    di sini dihitung secara dinamis per region lewat `max_idx`.
+    header/agregat — `leaf_idxs`) yang punya nilai TERTINGGI di
+    masing-masing kolom nilai — meniru highlight contoh statis yang sudah
+    ada di template (warna sama), tapi di sini dihitung secara dinamis per
+    region lewat `max_idx`. Kolom non_regret dan regret dicari lintas
+    SEMUA baris alasan (Involuntary + Voluntary sekaligus), TAPI kolom
+    total (GRAND TOTAL) khusus HANYA mencari di antara baris alasan
+    VOLUNTARY saja (`voluntary_leaf_idxs`, baris setelah header
+    "Voluntary") — highlight kolom itu menandai alasan voluntary
+    ter-signifikan, bukan alasan terbesar apa pun lintas kategori.
 
     Cara kerja detail: tabel ke-4 diambil lewat `tbl_matches[3]`. Validasi
     struktural `len(row_blocks) != len(reason_rows) + 1` memastikan jumlah
@@ -1209,8 +1604,16 @@ def _apply_slide14_reason_table(slide_xml, data, region):
         return slide_xml
 
     leaf_idxs = [i for i, r in enumerate(reason_rows) if not r["is_header"]]
+    # Kolom "total" (GRAND TOTAL) HANYA di-highlight pada baris alasan
+    # VOLUNTARY dengan nilai terbesar (bukan alasan terbesar lintas
+    # Involuntary+Voluntary seperti kolom non_regret/regret) — dicari lewat
+    # baris header "Voluntary" di `reason_rows`, semua leaf SETELAHNYA
+    # (sampai baris Grand Total, yang bukan leaf) adalah alasan voluntary.
+    vol_header_idx = next((i for i, r in enumerate(reason_rows) if r["label"] == "Voluntary"), None)
+    voluntary_leaf_idxs = [i for i in leaf_idxs if vol_header_idx is not None and i > vol_header_idx]
     max_idx = {col: max(leaf_idxs, key=lambda i: reason_rows[i][col])
-               for col in ("non_regret", "regret", "total")}
+               for col in ("non_regret", "regret")}
+    max_idx["total"] = max(voluntary_leaf_idxs, key=lambda i: reason_rows[i]["total"]) if voluntary_leaf_idxs else None
     value_cols = [None, "non_regret", "regret", "total"]
 
     new_table_xml = table_xml
@@ -1239,6 +1642,25 @@ def _apply_slide14_reason_table(slide_xml, data, region):
 
     text = text.replace(table_xml, new_table_xml, 1)
     return text.encode('utf-8')
+
+
+def _apply_slide14_highlights(slide_xml, data, region):
+    """
+    Mengisi 4 placeholder highlight slide 14 ({SLIDE14_HIGHLIGHT_A..D} —
+    nama region, tren YoY vs nasional, top reason involuntary non-regret,
+    top reason voluntary/voluntary-regret) dengan teks draf hasil
+    `get_slide14_highlights()` di chart_data.py, lewat
+    `_apply_highlight_tokens`.
+
+    Parameter: `slide_xml` (bytes XML slide 14 -- dipanggil setelah
+    `_apply_slide14_reason_table`, karena slot C/D di sini dihitung dari
+    `reason_out_rows` yang sama, meski secara teknis independen dari isi
+    tabel XML-nya), `data` (dict load_all()), `region`.
+
+    Return: bytes XML slide 14 dengan token sudah diganti. Dipanggil dari
+    `generate_pptx_for_region` (langkah 3).
+    """
+    return _apply_highlight_tokens(slide_xml, "SLIDE14_HIGHLIGHT", get_slide14_highlights(data, region))
 
 
 # ---------------------------------------------------------------------------
@@ -1376,10 +1798,13 @@ def _compute_slide15_indicator_map(slide_xml):
     di file ini, karena di sini navigasi ancestor/descendant XML yang
     sesungguhnya dibutuhkan, bukan sekadar pencarian pola teks).
 
-    Return: dict `{nama_shape (str): (row_idx, metric_idx)}`. Dipanggil
-    dari `_apply_slide15_indicators`, yang lalu mencocokkan nama tiap shape
+    Return: dict `{nama_shape (str): (row_idx, metric_idx, group_flip)}` —
+    `group_flip` (bool) menandai apakah grup pembungkus shape ini punya
+    flipV="1" di level grup (lihat catatan di atas). Dipanggil dari
+    `_apply_slide15_indicators`, yang lalu mencocokkan nama tiap shape
     `<p:sp>` di slide terhadap dict ini untuk tahu baris/metrik mana yang
-    diwakili shape tersebut.
+    diwakili shape tersebut, dan mengompensasi `group_flip` saat menyetel
+    flip individual shape itu.
     """
     ns = {'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
           'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
@@ -1391,6 +1816,18 @@ def _compute_slide15_indicator_map(slide_xml):
         if gname not in _SLIDE15_INDICATOR_GROUPS:
             continue
         row_idx = _SLIDE15_INDICATOR_GROUPS.index(gname)
+        # Sebagian grup (mis. "Group 18" / baris Sales Support) punya
+        # flipV="1" pada `<p:grpSpPr><a:xfrm>` GRUP itu sendiri — beda
+        # dengan grup lain yang tidak punya flip di level grup. Flip di
+        # level grup ini menambah SATU flip lagi di atas flip masing-masing
+        # segitiga anak, jadi kalau tidak dikompensasi, arah panah
+        # (naik/turun) yang terlihat jadi TERBALIK khusus untuk baris itu,
+        # meskipun warnanya sendiri (dihitung terpisah dari flip) tetap
+        # benar. `group_flip` dicatat di sini supaya
+        # `_apply_slide15_indicators` bisa membalik nilai flip yang
+        # di-set ke tiap anak sebagai kompensasi.
+        grp_xfrm = grp.find('./p:grpSpPr/a:xfrm', ns)
+        group_flip = grp_xfrm is not None and grp_xfrm.get('flipV') == '1'
         shapes = []
         for sp in grp.findall('./p:sp', ns):
             name = sp.find('.//p:cNvPr', ns).get('name')
@@ -1398,7 +1835,7 @@ def _compute_slide15_indicator_map(slide_xml):
             shapes.append((int(off.get('x')), name))
         shapes.sort()
         for metric_idx, (_, name) in enumerate(shapes):
-            mapping[name] = (row_idx, metric_idx)
+            mapping[name] = (row_idx, metric_idx, group_flip)
     return mapping
 
 
@@ -1407,7 +1844,7 @@ _PRSTGEOM_RE = re.compile(r'<a:prstGeom prst="[^"]*"')
 _DIRECT_FILL_RE = re.compile(r'<a:solidFill><a:srgbClr val="[0-9A-Fa-f]{6}"/></a:solidFill>|<a:grpFill/>')
 
 
-def _set_slide15_indicator_style(sp_xml, direction):
+def _set_slide15_indicator_style(sp_xml, direction, group_flip=False):
     """
     Mengubah TAMPILAN satu shape indikator (bentuk + orientasi + warna)
     sesuai `direction`, TANPA mengubah posisi maupun ukurannya (atribut lain
@@ -1415,6 +1852,15 @@ def _set_slide15_indicator_style(sp_xml, direction):
     kebetulan sebuah segitiga bisa "berubah" jadi lingkaran (dan sebaliknya)
     hanya dengan mengganti elemen `<a:prstGeom>`-nya, tetap di kotak
     pembatas (bounding box) yang sama persis.
+
+    Parameter `group_flip` (bool, default False): True jika grup pembungkus
+    shape ini sendiri punya flipV="1" (lihat
+    `_compute_slide15_indicator_map`, kasus nyata: "Group 18" / baris Sales
+    Support di slide 15). Kalau True, flip yang di-set ke shape ini
+    DIBALIK (XOR) supaya hasil akhirnya tetap terlihat benar meski ada
+    flip tambahan dari grup — tanpa ini, panah baris tersebut akan
+    tampil terbalik (naik kelihatan turun, dan sebaliknya) walau
+    warnanya sendiri sudah benar.
 
     Makna `direction`:
       - "down"  → attrition TURUN (bagus) → segitiga hijau menghadap bawah
@@ -1455,11 +1901,25 @@ def _set_slide15_indicator_style(sp_xml, direction):
         return f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>'
 
     if direction == "down":
-        sp_xml = _XFRM_OPEN_RE.sub(lambda m: set_flip(m, True), sp_xml, count=1)
+        want_flip = True
+    elif direction == "up":
+        want_flip = False
+    else:
+        want_flip = None
+
+    if group_flip and want_flip is not None:
+        # Kompensasi flipV="1" di level grup (lihat
+        # `_compute_slide15_indicator_map`) — tanpa ini, baris yang
+        # grupnya punya flip sendiri akan tampil terbalik meski warnanya
+        # tetap benar.
+        want_flip = not want_flip
+
+    if direction == "down":
+        sp_xml = _XFRM_OPEN_RE.sub(lambda m: set_flip(m, want_flip), sp_xml, count=1)
         sp_xml = _PRSTGEOM_RE.sub('<a:prstGeom prst="triangle"', sp_xml, count=1)
         sp_xml = _DIRECT_FILL_RE.sub(fill("92D050"), sp_xml, count=1)
     elif direction == "up":
-        sp_xml = _XFRM_OPEN_RE.sub(lambda m: set_flip(m, False), sp_xml, count=1)
+        sp_xml = _XFRM_OPEN_RE.sub(lambda m: set_flip(m, want_flip), sp_xml, count=1)
         sp_xml = _PRSTGEOM_RE.sub('<a:prstGeom prst="triangle"', sp_xml, count=1)
         sp_xml = _DIRECT_FILL_RE.sub(fill("FF0000"), sp_xml, count=1)
     else:
@@ -1483,7 +1943,10 @@ def _apply_slide15_indicators(slide_xml, data, region):
     `y26[row_idx][key]` dibandingkan dengan `y25[row_idx][key]`
     (`key` = `_SLIDE15_PCT_KEYS[metric_idx]`) untuk menentukan `direction`
     ("down" jika turun, "up" jika naik, "flat" jika sama), lalu
-    `_set_slide15_indicator_style(sp, direction)` menerapkan tampilannya.
+    `_set_slide15_indicator_style(sp, direction, group_flip)` menerapkan
+    tampilannya — `group_flip` diteruskan apa adanya dari
+    `_compute_slide15_indicator_map` untuk mengompensasi flip di level
+    grup (lihat catatan di fungsi itu dan di `_set_slide15_indicator_style`).
 
     Parameter: `slide_xml` (bytes XML slide 15, hasil dari
     `_apply_slide15_tables` — dipanggil SETELAH tabel diisi, meski secara
@@ -1510,7 +1973,7 @@ def _apply_slide15_indicators(slide_xml, data, region):
         m = re.search(r'name="([^"]*)"', sp)
         if not m or m.group(1) not in indicator_map:
             continue
-        row_idx, metric_idx = indicator_map[m.group(1)]
+        row_idx, metric_idx, group_flip = indicator_map[m.group(1)]
         if row_idx >= len(y26):
             continue
         key = _SLIDE15_PCT_KEYS[metric_idx]
@@ -1518,11 +1981,28 @@ def _apply_slide15_indicators(slide_xml, data, region):
         if v26 is None or v25 is None:
             continue
         direction = "down" if v26 < v25 else ("up" if v26 > v25 else "flat")
-        new_sp = _set_slide15_indicator_style(sp, direction)
+        new_sp = _set_slide15_indicator_style(sp, direction, group_flip)
         if new_sp != sp:
             text = text.replace(sp, new_sp, 1)
 
     return text.encode('utf-8')
+
+
+def _apply_slide15_highlights(slide_xml, data, region):
+    """
+    Mengisi 3 placeholder highlight slide 15 ({SLIDE15_HIGHLIGHT_A/B/C} —
+    tren YoY + penyebab, fungsi yang bergerak berlawanan arah dari Grand
+    Total, slot kosong) dengan teks draf hasil `get_slide15_highlights()`
+    di chart_data.py, lewat `_apply_highlight_tokens`.
+
+    Parameter: `slide_xml` (bytes XML slide 15 — dipanggil setelah
+    `_apply_slide15_indicators`, meski independen), `data` (dict
+    load_all()), `region`.
+
+    Return: bytes XML slide 15 dengan token sudah diganti. Dipanggil dari
+    `generate_pptx_for_region` (langkah 4).
+    """
+    return _apply_highlight_tokens(slide_xml, "SLIDE15_HIGHLIGHT", get_slide15_highlights(data, region))
 
 
 # ---------------------------------------------------------------------------
@@ -1541,19 +2021,45 @@ def _apply_slide16_branch_table(slide_xml, data, region, table_index, data_key, 
     urutan `branch_rows` apa adanya.
 
     MASALAH yang dipecahkan: jumlah cabang/cluster tiap region BERBEDA-BEDA,
-    sedangkan template punya jumlah baris tabel yang TETAP (dirancang untuk
-    region dengan cabang terbanyak). Kalau region ini cabangnya lebih
-    sedikit, sisa baris template TIDAK dibiarkan kosong/bernilai 0 (yang
-    akan terlihat janggal) — melainkan baris-baris yang tak terpakai
-    DIHAPUS SELURUHNYA (`new_table_xml.replace(row_xml, '', 1)`), dan tinggi
-    baris-baris yang tersisa (`new_row_height`) DIHITUNG ULANG dengan
-    membagi rata total tinggi seluruh baris data yang dihapus/dipertahankan
-    (`total_data_height // keep_count`), sehingga tabel tetap mengisi ruang
-    vertikal aslinya secara utuh — tidak ada celah kosong di bawah, tidak
-    ada baris kosong/bernilai 0.
+    sedangkan template punya jumlah baris tabel yang TETAP, dan tabelnya
+    harus SELALU MUAT pada tinggi total yang sama (`total_data_height`,
+    dijumlah dari tinggi baris data asli template) supaya tidak menabrak
+    konten lain di slide. Dua arah:
+      - Region dengan cabang LEBIH SEDIKIT dari baris template: sisa baris
+        tak terpakai DIHAPUS SELURUHNYA (bukan dibiarkan kosong/bernilai
+        0), dan tinggi baris yang dipertahankan DIHITUNG ULANG lebih besar
+        dari baseline (`total_data_height // n_branches`) supaya tabel
+        tetap mengisi ruang vertikal aslinya secara utuh.
+      - Region dengan cabang LEBIH BANYAK dari baris template (mis. Jabar
+        punya 34 cluster Collection tapi template cuma 15 baris data —
+        bug nyata yang pernah terjadi sebelum perbaikan ini): baris
+        TERAKHIR di template di-CLONE sebanyak kekurangannya supaya SEMUA
+        baris data region ini tampil (bukan diam-diam dibuang), TAPI
+        tinggi tiap baris (termasuk baris asli) ikut MENGECIL dari
+        baseline (`total_data_height // n_branches` juga, sekarang lebih
+        kecil dari baseline karena `n_branches` lebih besar dari
+        `data_row_count`) supaya tinggi total tabel tidak melebihi
+        alokasi aslinya. Ukuran font tiap sel ikut diskalakan turun
+        sebanding (`font_scale`, dibatasi minimum `_FONT_SCALE_MIN` biar
+        tidak sampai tidak terbaca) supaya teksnya tetap muat di baris
+        yang lebih pendek itu, bukan terpotong/tumpang tindih.
+
+    KENAPA DIBANGUN ULANG LEWAT POSISI (match span dari `re.finditer`),
+    BUKAN `str.replace` berbasis isi seperti versi sebelumnya: baris-baris
+    tabel yang BELUM diisi (masih placeholder template) seringkali
+    BYTE-IDENTICAL satu sama lain (semua "0"/kosong) — `str.replace(...,
+    count=1)` pada teks yang identik akan selalu mengenai kemunculan
+    PALING KIRI yang tersisa, jadi kalau langkah HAPUS dan langkah ISI
+    dipisah jadi 2 loop berurutan (bukan diproses baris demi baris
+    berurutan sesuai posisi), baris yang terhapus/tersisipi bisa jadi
+    baris yang SALAH (mis. clone baru malah disisipkan setelah baris
+    PERTAMA, bukan baris TERAKHIR). Membangun tabel baru dari potongan
+    `table_xml[a:b]` berdasarkan `.start()`/`.end()` match menghindari
+    ambiguitas ini sepenuhnya — tidak pernah bergantung pada isi baris
+    untuk tahu itu baris yang mana.
 
     Baris grand-total ("REGION – ..." — baris terakhir, tetap, tidak ikut
-    dihapus/digeser) hanya nilai-nilainya yang diperbarui, memakai agregat
+    dihapus/di-clone) hanya nilai-nilainya yang diperbarui, memakai agregat
     yang SAMA dengan fungsi yang cocok di slide 15 (`grand_total_key`, mis.
     "Sales Officer"/"Collection Officer", dicocokkan dengan label baris
     `data["s15_func"][region]["y26"]`) — labelnya sendiri dibiarkan
@@ -1574,10 +2080,11 @@ def _apply_slide16_branch_table(slide_xml, data, region, table_index, data_key, 
                          "Sales Officer"/"Collection Officer".
 
     Return: bytes XML slide 16 dengan tabel `table_index` sudah terisi
-    (baris tak terpakai dihapus, tinggi baris disesuaikan, grand-total
-    diperbarui). Dipanggil dua kali dari `generate_pptx_for_region`
-    (langkah 5), hasilnya diteruskan ke pemanggilan berikutnya (untuk tabel
-    lain) lalu ke `_apply_slide16_reason_table`.
+    (baris tak terpakai dihapus ATAU baris tambahan di-clone sesuai
+    kebutuhan, tinggi baris disesuaikan, grand-total diperbarui). Dipanggil
+    dua kali dari `generate_pptx_for_region` (langkah 5), hasilnya
+    diteruskan ke pemanggilan berikutnya (untuk tabel lain) lalu ke
+    `_apply_slide16_reason_table`.
     """
     branch_rows = data.get("s16", {}).get(region, {}).get(data_key, [])
     grand_total = data.get("s15_func", {}).get(region, {}).get("y26", [])
@@ -1587,13 +2094,14 @@ def _apply_slide16_branch_table(slide_xml, data, region, table_index, data_key, 
     tbl_matches = list(re.finditer(r'<a:tbl>.*?</a:tbl>', text, re.DOTALL))
     if len(tbl_matches) <= table_index:
         return slide_xml
-    table_xml = tbl_matches[table_index].group(0)
-    row_blocks = re.findall(r'<a:tr\b.*?</a:tr>', table_xml, re.DOTALL)
-    if len(row_blocks) < 2:
+    table_match = tbl_matches[table_index]
+    table_xml = table_match.group(0)
+    row_matches = list(re.finditer(r'<a:tr\b.*?</a:tr>', table_xml, re.DOTALL))
+    if len(row_matches) < 2:
         return slide_xml
 
-    data_row_count = len(row_blocks) - 2   # dikurangi baris header dan baris grand-total
-    keep_count = min(len(branch_rows), data_row_count)
+    data_row_count = len(row_matches) - 2   # dikurangi baris header dan baris grand-total
+    n_branches = len(branch_rows)
 
     def cell_values(label, r):
         if r is None:
@@ -1603,36 +2111,98 @@ def _apply_slide16_branch_table(slide_xml, data, region, table_index, data_key, 
                 _fmt_slide15_num(r["out_rg"]), _fmt_slide15_num(r["out_total"]),
                 _fmt_slide15_pct(r["pct_nr"]), _fmt_slide15_pct(r["pct_rg"]), _fmt_slide15_pct(r["pct_total"])]
 
-    # Bagikan ulang total tinggi baris-baris yang dihapus ke baris-baris yang
-    # dipertahankan, supaya tinggi keseluruhan tabel tidak berubah (tidak ada
-    # ruang kosong yang terbuang).
-    data_rows = row_blocks[1:1 + data_row_count]
-    total_data_height = sum(int(m.group(0)[9:-1]) for m in
-                             (re.match(r'<a:tr h="(\d+)"', r) for r in data_rows) if m)
-    new_row_height = (total_data_height // keep_count) if keep_count else 0
+    # Kolom "Out Regr" (index 3) dan "%Regret" (index 6) di template punya
+    # fill merah (FF0000) yang di-hardcode STATIS pada beberapa baris
+    # teratas — cocok untuk region demo (Jawa Tengah) yang datanya memang
+    # diurutkan menurun berdasar out_rg, tapi TIDAK ikut disesuaikan saat
+    # baris diisi ulang untuk region lain, jadi highlight-nya bisa
+    # nyasar ke baris yang out_rg/pct_rg-nya sebenarnya 0. Di sini
+    # highlight dihitung ULANG per baris sesuai data region yang
+    # sebenarnya: merah HANYA kalau nilai kolom itu sendiri bukan 0. Warna
+    # teks di dalam sel ikut disetel di sini juga (putih saat merah,
+    # hitam saat tidak) — teks hitam di atas fill merah nyaris tidak
+    # terbaca, dan karena logika ini dijalankan SERAGAM untuk semua baris
+    # (baik baris asli template maupun baris hasil clone untuk region
+    # dengan cabang/cluster lebih banyak dari baris template), warna
+    # latar+teksnya otomatis ikut benar juga untuk baris tambahan itu.
+    _REGRET_HIGHLIGHT_COLS = {3: "out_rg", 6: "pct_rg"}
+    _RPR_RE = re.compile(r'(<a:rPr\b[^>]*>)(.*?)(</a:rPr>)', re.DOTALL)
 
-    new_table_xml = table_xml
-    for i in range(data_row_count):
-        row_xml = row_blocks[i + 1]
-        if i >= keep_count:
-            new_table_xml = new_table_xml.replace(row_xml, '', 1)
-            continue
-        r = branch_rows[i]
-        values = cell_values(r["label"], r)
+    def set_first_run_color(tc, color_hex):
+        def repl(m):
+            inner = re.sub(r'<a:solidFill>.*?</a:solidFill>',
+                            f'<a:solidFill><a:srgbClr val="{color_hex}"/></a:solidFill>',
+                            m.group(2), count=1)
+            return m.group(1) + inner + m.group(3)
+        return _RPR_RE.sub(repl, tc, count=1)
 
-        def transform(ci, tc, values=values):
-            return re.sub(r'(<a:t>)[^<]*(</a:t>)',
-                           lambda m, v=values[ci]: m.group(1) + v.replace('&', '&amp;') + m.group(2),
-                           tc, count=1)
+    # Skala ukuran font sel data (`sz="NNN"`, satuan ratusan poin) sebanding
+    # dengan seberapa jauh `new_row_height` menyusut dari tinggi baris
+    # ASLI template (`baseline_row_height`) — supaya saat baris di-clone
+    # banyak-banyak (region dengan cabang/cluster jauh lebih banyak dari
+    # baris template, mis. Jabar 41 branch Sales vs 30 baris template),
+    # tabelnya TETAP MUAT pada tinggi asli yang dialokasikan template
+    # (tidak melebar ke bawah menabrak konten lain di slide), dengan teks
+    # yang ikut mengecil alih-alih terpotong/tumpang tindih. `_FONT_SCALE_MIN`
+    # jadi batas bawah supaya teks tidak sampai tidak terbaca sama sekali
+    # untuk region dengan jumlah baris ekstrem.
+    _FONT_SCALE_MIN = 0.55
+    _SZ_RE = re.compile(r'sz="(\d+)"')
 
+    def scale_fonts(row_xml, scale):
+        if scale >= 0.999:
+            return row_xml
+        return _SZ_RE.sub(lambda m: f'sz="{max(400, round(int(m.group(1)) * scale))}"', row_xml)
+
+    def fill_row(row_xml, height, values, r, font_scale):
+        def transform(ci, tc, values=values, r=r):
+            new_tc = re.sub(r'(<a:t>)[^<]*(</a:t>)',
+                             lambda m, v=values[ci]: m.group(1) + v.replace('&', '&amp;') + m.group(2),
+                             tc, count=1)
+            field = _REGRET_HIGHLIGHT_COLS.get(ci)
+            if field is not None:
+                nyala = bool(r is not None and (r.get(field) or 0) != 0)
+                fill = '<a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>' if nyala else '<a:solidFill><a:schemeClr val="bg1"/></a:solidFill>'
+                new_tc = _TCPR_TAIL_OPTIONAL_RE.sub(rf'\1{fill}\2', new_tc, count=1)
+                new_tc = set_first_run_color(new_tc, "FFFFFF" if nyala else "000000")
+            return new_tc
         new_row_xml, num_tcs = _rebuild_row_cells(row_xml, transform)
         if num_tcs != 8:
-            continue
-        new_row_xml = _TR_OPEN_RE.sub(f'<a:tr h="{new_row_height}"', new_row_xml, count=1)
-        new_table_xml = new_table_xml.replace(row_xml, new_row_xml, 1)
+            return row_xml
+        new_row_xml = scale_fonts(new_row_xml, font_scale)
+        return _TR_OPEN_RE.sub(f'<a:tr h="{height}"', new_row_xml, count=1)
 
-    # Baris grand-total: pertahankan label "REGION – ..." yang sudah ada, hanya perbarui nilainya
-    gt_row_xml = row_blocks[-1]
+    data_row_matches = row_matches[1:1 + data_row_count]
+    total_data_height = sum(int(m.group(0)[9:-1]) for m in
+                             (re.match(r'<a:tr h="(\d+)"', dm.group(0)) for dm in data_row_matches) if m)
+    baseline_row_height = (total_data_height // data_row_count) if data_row_count else 0
+
+    # Tinggi baris SELALU dihitung ulang dari total budget tinggi asli
+    # dibagi rata ke `n_branches` baris — supaya tinggi TOTAL tabel selalu
+    # sama dengan yang dialokasikan template, baik saat baris dikurangi
+    # (row lebih tinggi dari baseline) maupun saat baris ditambah (row
+    # lebih pendek dari baseline, dikompensasi lewat `font_scale`).
+    new_row_height = (total_data_height // n_branches) if n_branches else 0
+    font_scale = max(_FONT_SCALE_MIN, min(1.0, new_row_height / baseline_row_height)) if baseline_row_height else 1.0
+
+    if n_branches >= data_row_count:
+        # Sama atau lebih banyak: pakai SEMUA baris template apa adanya
+        # sebagai basis, lalu clone baris TERAKHIR sebanyak kekurangannya.
+        row_templates = [dm.group(0) for dm in data_row_matches]
+        if data_row_count:
+            row_templates += [row_templates[-1]] * (n_branches - data_row_count)
+    else:
+        # Lebih sedikit: pakai HANYA `n_branches` baris pertama sebagai
+        # basis (sisanya dihapus dengan sendirinya karena tidak diikutkan
+        # ke `row_templates`).
+        row_templates = [dm.group(0) for dm in data_row_matches[:n_branches]]
+
+    filled_rows = []
+    for i in range(n_branches):
+        r = branch_rows[i]
+        filled_rows.append(fill_row(row_templates[i], new_row_height, cell_values(r["label"], r), r, font_scale))
+
+    gt_row_xml = row_matches[-1].group(0)
     gt_values = cell_values(None, grand_total)   # index 0 (label) sengaja dibiarkan di bawah
 
     def gt_transform(ci, tc, gt_values=gt_values):
@@ -1643,10 +2213,15 @@ def _apply_slide16_branch_table(slide_xml, data, region, table_index, data_key, 
                        tc, count=1)
 
     new_gt_row, num_gt_tcs = _rebuild_row_cells(gt_row_xml, gt_transform)
-    if num_gt_tcs == 8:
-        new_table_xml = new_table_xml.replace(gt_row_xml, new_gt_row, 1)
+    if num_gt_tcs != 8:
+        new_gt_row = gt_row_xml
 
-    text = text.replace(table_xml, new_table_xml, 1)
+    header_xml = row_matches[0].group(0)
+    new_table_xml = (table_xml[:row_matches[0].start()] + header_xml +
+                      ''.join(filled_rows) + new_gt_row +
+                      table_xml[row_matches[-1].end():])
+
+    text = text[:table_match.start()] + new_table_xml + text[table_match.end():]
     return text.encode('utf-8')
 
 
@@ -1736,6 +2311,22 @@ def _apply_slide16_reason_table(slide_xml, data, region):
 
     text = text.replace(table_xml, new_table_xml, 1)
     return text.encode('utf-8')
+
+
+def _apply_slide16_highlight(slide_xml, data, region):
+    """
+    Mengisi 1 placeholder insight slide 16 ({SLIDE16_INSIGHT}) dengan teks
+    draf hasil `get_slide16_highlights()` di chart_data.py, lewat
+    `_apply_highlight_tokens`.
+
+    Parameter: `slide_xml` (bytes XML slide 16), `data` (dict load_all()),
+    `region`.
+
+    Return: bytes XML slide 16 dengan token sudah diganti. Dipanggil dari
+    `generate_pptx_for_region` (langkah 5), setelah
+    `_apply_slide16_reason_table`.
+    """
+    return _apply_highlight_tokens(slide_xml, "SLIDE16", {"INSIGHT": get_slide16_highlights(data, region)})
 
 
 # ---------------------------------------------------------------------------
@@ -1857,6 +2448,30 @@ def _apply_slide18_summary(slide_xml, data, region):
             text = text.replace(sp, new_sp, 1)
 
     return text.encode('utf-8')
+
+
+def _apply_slide18_highlights(slide_xml, data, region):
+    """
+    Mengisi token angka {HIGHLIGHT_FRAUDRATE_YOY} dan 4 slot
+    {SLIDE18_HIGHLIGHT_A..D} di slide 18 dengan teks draf hasil
+    `get_slide18_highlights()` di chart_data.py, lewat
+    `_apply_highlight_tokens` (dipanggil dua kali dengan prefix berbeda,
+    karena {HIGHLIGHT_FRAUDRATE_YOY} tidak memakai prefix "SLIDE18_"
+    seperti 4 slot lainnya — beda penamaan token ini murni ikut apa yang
+    sudah ada di template).
+
+    Parameter: `slide_xml` (bytes XML slide 18), `data` (dict load_all()),
+    `region`.
+
+    Return: bytes XML slide 18 dengan token sudah diganti. Dipanggil dari
+    `generate_pptx_for_region` (langkah 6), setelah
+    `_apply_slide18_worst5_table`.
+    """
+    highlights = get_slide18_highlights(data, region)
+    slide_xml = _apply_highlight_tokens(slide_xml, "HIGHLIGHT", {"FRAUDRATE_YOY": highlights["FRAUDRATE_YOY"]})
+    slide_xml = _apply_highlight_tokens(slide_xml, "SLIDE18_HIGHLIGHT",
+                                         {k: v for k, v in highlights.items() if k != "FRAUDRATE_YOY"})
+    return slide_xml
 
 
 def _apply_slide18_worst5_table(slide_xml, data, region, table_index, data_key):
@@ -2054,12 +2669,35 @@ def generate_pptx_for_region(region, data, verbose=True):
         #    sehingga baris region itu jadi terduplikasi (dua baris dengan
         #    nama region yang sama).
         slide_paths_early = _get_slide_paths(editor)
+
+        # 3a. Mengisi 3 tabel statis persentase AGE/EDU/LOS slide 4
+        #     (_apply_slide4_lea_tables) lalu highlight-nya
+        #     (_apply_slide4_highlights).
+        if len(slide_paths_early) > 3:
+            slide4_path = slide_paths_early[3]
+            slide4_xml = editor.read(slide4_path)
+            slide4_xml = _apply_slide4_lea_tables(slide4_xml, data, region)
+            slide4_xml = _apply_slide4_highlights(slide4_xml, data, region)
+            editor.update(slide4_path, slide4_xml)
+
+        # 3b. Mengisi 24 kotak highlight persentase slide 5
+        #     (_apply_slide5_pct_boxes) — lihat penjelasan pemetaan shape
+        #     di get_slide5_pct_boxes (chart_data.py).
+        if len(slide_paths_early) > 4:
+            slide5_path = slide_paths_early[4]
+            slide5_xml = editor.read(slide5_path)
+            slide5_xml = _apply_slide5_pct_boxes(slide5_xml, data, region)
+            slide5_xml = _apply_slide5_highlights(slide5_xml, data, region)
+            editor.update(slide5_path, slide5_xml)
+
         if len(slide_paths_early) > 13:
             slide14_path = slide_paths_early[13]
             slide14_xml = editor.read(slide14_path)
             slide14_xml = _apply_slide14_tables(slide14_xml, data)
+            slide14_xml = _apply_slide14_top3_highlights(slide14_xml, data)
             slide14_xml = _apply_slide14_rect_highlights(slide14_xml, region)
             slide14_xml = _apply_slide14_reason_table(slide14_xml, data, region)
+            slide14_xml = _apply_slide14_highlights(slide14_xml, data, region)
             editor.update(slide14_path, slide14_xml)
 
         # 4. Mengisi 2 tabel "Attrition Report by Function" slide 15
@@ -2070,6 +2708,7 @@ def generate_pptx_for_region(region, data, verbose=True):
             slide15_xml = editor.read(slide15_path)
             slide15_xml = _apply_slide15_tables(slide15_xml, data, region)
             slide15_xml = _apply_slide15_indicators(slide15_xml, data, region)
+            slide15_xml = _apply_slide15_highlights(slide15_xml, data, region)
             editor.update(slide15_path, slide15_xml)
 
         # 5. Mengisi tabel field-attrition slide 16: tabel per-cabang Sales
@@ -2087,6 +2726,7 @@ def generate_pptx_for_region(region, data, verbose=True):
                 slide16_xml, data, region, table_index=1,
                 data_key="branch_collection", grand_total_key="Collection Officer")
             slide16_xml = _apply_slide16_reason_table(slide16_xml, data, region)
+            slide16_xml = _apply_slide16_highlight(slide16_xml, data, region)
             editor.update(slide16_path, slide16_xml)
 
         # 6. Mengisi ringkasan fraud + indikatornya slide 18
@@ -2099,6 +2739,7 @@ def generate_pptx_for_region(region, data, verbose=True):
             slide18_xml = _apply_slide18_summary(slide18_xml, data, region)
             slide18_xml = _apply_slide18_worst5_table(slide18_xml, data, region, table_index=0, data_key="worst5_branch_25")
             slide18_xml = _apply_slide18_worst5_table(slide18_xml, data, region, table_index=1, data_key="worst5_cluster_25")
+            slide18_xml = _apply_slide18_highlights(slide18_xml, data, region)
             editor.update(slide18_path, slide18_xml)
 
         # 7. Pass penggantian teks generik untuk SEMUA slide: nama region
@@ -2142,14 +2783,30 @@ def generate_pptx_for_region(region, data, verbose=True):
             editor.update(slide3_path, slide3_xml)
 
         # 9. Mengisi tabel training BSC slide 10 (_apply_slide10_table —
-        #    sama untuk semua region) lalu memindahkan kotak highlight
-        #    merahnya ke baris `region` (_apply_slide10_rect_highlight).
+        #    sama untuk semua region), memindahkan kotak highlight
+        #    merahnya ke baris `region` (_apply_slide10_rect_highlight),
+        #    lalu mengisi draf insight otomatisnya (_apply_slide10_insight).
         if len(slide_paths) > 9:
             slide10_path = slide_paths[9]
             slide10_xml = editor.read(slide10_path)
             slide10_xml = _apply_slide10_table(slide10_xml, data)
             slide10_xml = _apply_slide10_rect_highlight(slide10_xml, region)
+            slide10_xml = _apply_slide10_insight(slide10_xml, data, region)
             editor.update(slide10_path, slide10_xml)
+
+        # 9b. Mengisi highlight PA Sales slide 6 dan PA Collection slide 7
+        #     (_apply_slide6_highlights / _apply_slide7_highlights).
+        if len(slide_paths) > 5:
+            slide6_path = slide_paths[5]
+            slide6_xml = editor.read(slide6_path)
+            slide6_xml = _apply_slide6_highlights(slide6_xml, data, region)
+            editor.update(slide6_path, slide6_xml)
+
+        if len(slide_paths) > 6:
+            slide7_path = slide_paths[6]
+            slide7_xml = editor.read(slide7_path)
+            slide7_xml = _apply_slide7_highlights(slide7_xml, data, region)
+            editor.update(slide7_path, slide7_xml)
 
         # 10. Simpan seluruh perubahan yang terkumpul di `editor` sebagai
         #     file PPTX baru di `out_path` (menulis ulang zip, menjaga tipe

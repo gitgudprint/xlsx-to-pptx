@@ -1,0 +1,25 @@
+1. Runtime & Throughput Metrics
+Total End-to-End Latency: Total wall-clock time from initial script execution to final .pptx file write.
+
+Phase-by-Phase Breakdown: Isolated execution times for file I/O (reading multi-sheet .xlsx files), text generation/summarization (API calls or local NLP/heuristics), and presentation rendering via python-pptx.
+
+Throughput Velocity: Normalised speed metrics, such as tables/charts populated per second or total slides generated per minute.
+
+2. Data Integrity & Processing Scope
+Ingestion Volume: Total count of Excel workbooks, individual sheets, tabular cells, and chart series successfully mapped.
+
+Extraction & Mapping Accuracy: Rate of successful cell-to-slide mappings versus null, dropped, or mismatched data points.
+
+Highlight Faithfulness: Verification score confirming generated summary figures match the underlying Excel values (critical if using an LLM to prevent hallucinations).
+
+3. System Resource Utilization
+Peak RAM Consumption: Maximum memory footprint recorded during concurrent workbook reads, particularly when caching large datasets in memory via libraries like pandas or openpyxl.
+
+External Dependency Overhead: API latency, retry counts, rate-limit hits, and token usage/costs if drafting highlights via third-party LLM endpoints.
+
+4. Operational ROI & Error Rates
+Time Savings Equivalent: Direct comparison between automated runtime (e.g., 30 seconds) and the baseline manual deck preparation time (e.g., 45 minutes).
+
+Exception & Failure Frequency: Total logged errors categorized by root cause, such as missing files, schema shifts, or locked .pptx templates.
+
+Post-Run Intervention Rate: Percentage of output decks requiring manual formatting, repositioning, or text corrections after generation.

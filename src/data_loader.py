@@ -21,6 +21,7 @@ from .config import (
     XLSX_FILES, REGIONS, REGION_WILAYAH, REGION_TRAINING, REGION_FRAUD,
     LOS_ORDER, LOS_ORDER_FRONTLINERS, EDU_ORDER, AGE_ORDER, FUNCTION_ORDER,
 )
+from .perf import metrics as _perf_metrics
 
 
 def _wb(key, read_only=True, data_only=True):
@@ -62,6 +63,7 @@ def _sheet_rows(key, sheet_name):
     ws = wb[sheet_name]
     rows = list(ws.iter_rows(values_only=True))
     wb.close()
+    _perf_metrics.record_sheet_read(len(rows), len(rows[0]) if rows else 0)
     return rows
 
 
@@ -81,7 +83,9 @@ def _pd(key, sheet_name, header=0):
     `_load_db_b` dan `_load_active_frontliners` di bagian bawah, yang memanggil
     pd.read_excel langsung, bukan lewat `_pd`).
     """
-    return pd.read_excel(XLSX_FILES[key], sheet_name=sheet_name, header=header, engine="openpyxl")
+    df = pd.read_excel(XLSX_FILES[key], sheet_name=sheet_name, header=header, engine="openpyxl")
+    _perf_metrics.record_sheet_read(df.shape[0], df.shape[1])
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -1904,6 +1908,7 @@ def _load_db_b():
     print("  Loading employee database (file b)...")
     df = pd.read_excel(XLSX_FILES["b"], sheet_name="DATABASE",
                        header=0, engine="openpyxl")
+    _perf_metrics.record_sheet_read(df.shape[0], df.shape[1])
     return df
 
 
@@ -1922,6 +1927,7 @@ def _load_active_frontliners():
     print("  Loading Active Frontliners database (file c)...")
     df = pd.read_excel(XLSX_FILES["c"], sheet_name="Active Frontliners",
                        header=0, engine="openpyxl")
+    _perf_metrics.record_sheet_read(df.shape[0], df.shape[1])
     return df
 
 
@@ -1947,6 +1953,8 @@ def load_all(verbose=True):
     pptx_updater.py) untuk semua region, tanpa perlu membaca ulang file
     xlsx untuk tiap region.
     """
+    _perf_metrics.workbooks_configured = len(XLSX_FILES)
+
     if verbose:
         print("Loading slide 3 YoY data...")
     slide3 = load_slide3_yoy()

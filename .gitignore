@@ -24,3 +24,7 @@ two_slides.pptx
 # Python
 __pycache__/
 *.pyc
+.venv/
+
+# Generated per-run, not a source artifact
+performance_report.md
